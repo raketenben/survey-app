@@ -10,15 +10,16 @@
   export default {
     data() {
       return {
-        samples: 50,
+        samples: 100,
         state: "Vue",
         radius: 50,
         size: 200,
         weightFactor: 0.2,
         weightRange: 0.1,
         weights: [],
-        fill: "rgb(70 33 78 / 23%)",
+        fill: "purple",
         stroke:"rgb(53 0 53)",
+        lock: false,
       }
     },
     computed: {
@@ -32,8 +33,6 @@
 
         //print weights
         for(let i = 0; i < this.weights.length; i++) {
-
-          console.log(this.weights);
 
           let closestIndex = [0,Math.abs(points[0][0]-this.weights[i])];
           for(let j = 0; j < points.length; j++) {
@@ -75,6 +74,22 @@
       },
     },
     methods: {
+      updateTouch(e) {
+        if(this.lock) {
+          return;
+        }
+        this.lock = true;
+
+        //this.weights = new Array(e.touches.length).fill(0);
+        
+        for(let i = 0; i < e.touches.length; i++) {
+          this.updateWeight(i, e.touches[i]);
+        }
+        
+        setTimeout(() => {
+          this.lock = false;
+        }, 50);
+      },
       updateWeight(index, touch) {
         let x = touch.clientX - window.innerWidth/2;
         let y = touch.clientY - window.innerHeight/2;
@@ -87,29 +102,25 @@
       },
     },
     mounted() {
-      this.weights = new Array(10).fill(0);
 
-      //touch
-      this.$refs.circle.addEventListener("touchstart", e => {
-        for(let i = 0; i < e.touches.length; i++) {
-          this.updateWeight(i, e.touches[i]);
+      window.addEventListener("touchstart", e => {
+        e.preventDefault();
+        this.updateTouch(e);
+      }, {passive: false});
+
+      window.addEventListener("touchmove", e => {
+        e.preventDefault();
+        this.updateTouch(e);
+      }, {passive: false});
+
+      window.addEventListener("mousemove", e => {
+        e.preventDefault();
+        
+        if(e.buttons === 1) {
+          this.updateWeight(0, e);
         }
-      });
-
-      this.$refs.circle.addEventListener("touchmove", e => {
-        for(let i = 0; i < e.touches.length; i++) {
-          this.updateWeight(i, e.touches[i]);
-        }
-      });
-
-      //mouse
-      this.$refs.circle.addEventListener("mousedown", e => {
-        this.updateWeight(0, e);
-      });
-
-      this.$refs.circle.addEventListener("mousemove", e => {
-        this.updateWeight(0, e);
-      });
+        
+      }, {passive: false});
 
       /*window.addEventListener('mousemove', e => {
         let x = e.clientX - window.innerWidth/2;
