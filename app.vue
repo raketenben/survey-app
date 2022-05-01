@@ -1,96 +1,95 @@
 <template>
   <main>
-    <svg id="circle" ref="circle" :viewBox="`0 0 ${size} ${size}`">
-      <polyline :points="points" :fill="fill" :stroke="stroke"/>
-    </svg>
+    <Items v-if="setup" @submit="submit"/>
+    <div v-else id="circle" @mousedown="mouseDown" @mousemove="mouseMove" @touchmove="touchMove" @touchstart="touchStart">
+      <Circle ref="circle" :weights="combinedWeights"/>
+      <Option :options="options" :weights="combinedWeights" :radius="50"/>
+      <!--:center="`${currentlyJoined}`"-->
+    </div>
+    <img v-if="deferredPrompt != null" src="/iconmonstr-arrow-down-lined.svg" @click="install" alt="Install" id="install">
+    <img v-if="!setup" src="/iconmonstr-share-thin.svg" @click="share" alt="Share" id="share">
   </main>
 </template>
 
 <script>
+  import Circle from './components/circle.vue'
+  import Option from './components/options.vue'
+  import Items from './components/items.vue'
+
   export default {
     data() {
       return {
-        samples: 100,
-        state: "Vue",
-        radius: 50,
-        size: 200,
-        weightFactor: 0.2,
-        weightRange: 0.1,
-        weights: [],
-        fill: "purple",
-        stroke:"rgb(53 0 53)",
-        lock: false,
+        servicePrefix: 'survey-',
+        weights: [], 
+        roomId: null,
+        peerId: null,
+        peer: null,
+        setup: true,
+        options: null,
+        isHost: false,
+        deferredPrompt: null,
+        connections:[],
+        remoteWeights: {},
+        sendTimeout: null,
+        sendWaitTime: 50,
+        sendBlocked: false,
       }
     },
-    computed: {
-      points() {
-        let points = new Array(this.samples).fill(0);
-
-        for(let i = 0; i < this.samples; i++) {
-          let angle = i * Math.PI * 2 / this.samples;
-          points[i] = [angle,1];
-        }
-
-        //print weights
-        for(let i = 0; i < this.weights.length; i++) {
-
-          let closestIndex = [0,Math.abs(points[0][0]-this.weights[i])];
-          for(let j = 0; j < points.length; j++) {
-            let distance = Math.abs(points[j][0]-this.weights[i]);
-
-            if(distance < closestIndex[1]) {
-              closestIndex = [j,distance];
-            }
-          }
-
-          for(let z = -(this.weightRange*points.length); z <= (this.weightRange*points.length); z++) {
-
-            let index = closestIndex[0] + z;
-
-            let normalized = Math.abs(z) / (this.weightRange*points.length);
-
-            let factor = (Math.cos(normalized*Math.PI)+1)*0.5;
-
-            if(index >= points.length) {
-              index -= points.length;
-            }
-            if(index < 0) {
-              index += points.length;
-            }
-  
-            points[index][1]+= factor*this.weightFactor;
-          }
-          
-        }
-
-        points = points.map((point, i) => {
-          let x = Math.cos(point[0]) * this.radius * point[1] + this.size/2;
-          let y = Math.sin(point[0]) * this.radius * point[1] + this.size/2;
-
-          return `${x},${y}`;
-        });
-
-        return points.join(" ")+" "+points[0];
-      },
+    components: {
+      Circle,
+      Option,
+      Items
     },
     methods: {
-      updateTouch(e) {
-        if(this.lock) {
-          return;
-        }
-        this.lock = true;
+      sendWeights(){
+        if(!this.isHost){
+          if(this.sendBlocked) return;
+          this.sendBlocked = true;
+          setTimeout(() => {
+            this.sendBlocked = false;
+          }, this.sendWaitTime);
 
-        //this.weights = new Array(e.touches.length).fill(0);
-        
-        for(let i = 0; i < e.touches.length; i++) {
-          this.updateWeight(i, e.touches[i]);
+          let weights = this.weights.map((w) => {return w[0]});
+          this.peer.send({type:"weights",data:weights})
         }
-        
-        setTimeout(() => {
-          this.lock = false;
-        }, 50);
       },
-      updateWeight(index, touch) {
+      broadcastWeights(){
+        if(this.isHost){
+          this.connections.forEach(connection => {
+            let allWeights = this.remoteWeights;
+            allWeights[this.servicePrefix+this.roomId] = this.weights.map((w) => {return w[0]});
+            connection.send({type:"weights",data:allWeights});
+          });
+        }
+      },
+
+      mouseDown(e){
+        this.updateWeight(0, e, 1);
+        this.sendWeights();
+        this.broadcastWeights();
+      },
+      mouseMove(e){
+        if(e.buttons === 1) {
+          this.updateWeight(0, e, 1);
+          this.sendWeights();
+          this.broadcastWeights();
+        }
+      },
+      touchMove(e){
+        this.updateTouch(e);
+      },
+      touchStart(e){
+        this.weights = [];
+        this.updateTouch(e);
+      },
+      updateTouch(e) {
+        for(let i = 0; i < e.touches.length; i++) {
+          this.updateWeight(i, e.touches[i],1/e.touches.length);
+        }
+        this.sendWeights();
+        this.broadcastWeights();
+      },
+      updateWeight(index, touch, weight) {
         let x = touch.clientX - window.innerWidth/2;
         let y = touch.clientY - window.innerHeight/2;
 
@@ -98,59 +97,178 @@
 
         let angle = (Math.PI -Math.atan(div)+Math.PI/2  + ((y < 0) ? -Math.PI : 0)+Math.PI) % (Math.PI*2);
 
-        this.weights[index] = angle;
+        this.weights[index] = [angle,weight];
+      },
+      submit(items){
+        this.setup = false;
+        this.options = items.map(item => [item,false]);
+      },
+      share(){
+        navigator.share({
+          title: 'Share',
+          text: 'Share',
+          url: `${window.location.href}?r=${this.roomId}`,
+        })
+      },
+      install(){
+        this.deferredPrompt.prompt();
+        this.deferredPrompt.userChoice.then((choiceResult) => {
+          this.deferredPrompt = null;
+        });
+      },
+
+      addHostListener(){
+        this.peer.on("open", id => {
+          this.peerId = id;
+        });
+
+        this.peer.on('connection', (conn) => {
+          // Handle a peer connecting to us
+          conn.on("open", () => {
+            console.log("connection to peer open");
+            this.connections.push(conn);
+            conn.send({type:"setup",data:this.options});
+            this.broadcastWeights();
+
+            conn.on("data", (message) => {
+              if(message.type === "weights"){
+                this.remoteWeights[conn.peer] = message.data;
+                this.broadcastWeights();
+              }
+            });
+          });
+
+          conn.on("close", () => {
+            this.connections = this.connections.filter(c => c.peer !== conn.peer);
+            delete this.remoteWeights[conn.peer];
+            this.broadcastWeights();
+          });
+
+        });
+      },
+      addClientListener(){
+        this.peer.on("open", () => {
+          this.peerId = this.peer.provider._id;
+
+          this.peer.on("data", (message) => {
+            console.log("data", message);
+            switch (message.type) {
+              case "setup":
+                this.options = message.data;
+                this.setup = false;
+                break;
+              case "weights":
+                this.remoteWeights = message.data;
+                break;
+              default:
+                console.log("unknown message type", message.type);
+            }
+          });
+        });
       },
     },
-    mounted() {
+    async mounted() {
+      if(process.client){
+        const Peer = (await import('peerjs')).default;
 
-      window.addEventListener("touchstart", e => {
-        e.preventDefault();
-        this.updateTouch(e);
-      }, {passive: false});
-
-      window.addEventListener("touchmove", e => {
-        e.preventDefault();
-        this.updateTouch(e);
-      }, {passive: false});
-
-      window.addEventListener("mousemove", e => {
-        e.preventDefault();
-        
-        if(e.buttons === 1) {
-          this.updateWeight(0, e);
+        if(this.$route.query && this.$route.query.r) {
+          this.roomId = this.$route.query.r;
+          this.peer = new Peer();
+          this.peer = this.peer.connect(this.servicePrefix+this.roomId);
+          this.addClientListener();
+        }else {
+          this.roomId = Math.random().toString(36).substring(2, 20);
+          this.peer = new Peer(this.servicePrefix+this.roomId);
+          this.$route.query = {r: this.roomId};
+          this.addHostListener();
+          this.isHost = true;
         }
         
-      }, {passive: false});
+        window.addEventListener('beforeinstallprompt', (e) => {
+          e.preventDefault();
+          this.deferredPrompt = e;
+        });
 
-      /*window.addEventListener('mousemove', e => {
-        let x = e.clientX - window.innerWidth/2;
-        let y = e.clientY - window.innerHeight/2;
-
-        let div = x / y;
-
-        let angle = (Math.PI -Math.atan(div)+Math.PI/2  + ((y < 0) ? -Math.PI : 0)+Math.PI) % (Math.PI*2);
-
-        this.weights[0] = angle;
-        console.log(angle)
-      });*/
+        //service worker
+        if('serviceWorker' in navigator) {
+          navigator.serviceWorker.register('/sw.js');
+        }
+      }
     },
+    computed: {
+      installState(){
+        let isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+        if (document.referrer.startsWith('android-app://')) {
+          return 'twa';
+        } else if (navigator.standalone || isStandalone) {
+          return 'standalone';
+        }
+        return 'browser';
+      },
+      combinedWeights(){
+        let combinedWeights = [];
+        for (var key in this.remoteWeights) {
+          if(key != this.peerId){
+            var value = this.remoteWeights[key];
+            for(let i = 0; i < value.length; i++){
+              combinedWeights.push([value[i],1/value.length]);
+            }
+          }
+        }
+        return combinedWeights.concat(this.weights);
+      },
+      currentlyJoined(){
+        let remote = Object.keys(this.remoteWeights).length;
+        if(remote < 1) return 1;
+        return remote;
+      },
+    },
+    head() {
+      return {
+        title: 'Survey',
+        meta: [
+          {
+            name: 'viewport',
+            content: 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no' 
+          },
+          {
+            hid: 'description',
+            name: 'description',
+            content: 'Survey'
+          },
+        ],
+        link: [
+          {
+            rel:"manifest", 
+            href:"/manifest.webmanifest"
+          },
+          {
+            rel:"icon", 
+            href:"/favicon.ico"
+          }
+        ]
+      }
+    }
   }
 </script>
 
 
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@700&display=swap');
+
   * {
     padding: 0px;
     margin: 0px;
     box-sizing: border-box;
+    font-size: 1.4rem;
   }
 
   html,body,#__nuxt,main {
     height: 100%;
     width: 100%;
+    touch-action: none;
     color: white;
-
-    font-family:'Lucida Sans', 'Lucida Sans Regular', 'Lucida Grande', 'Lucida Sans Unicode', Geneva, Verdana, sans-serif
+    font-family: 'Open Sans','Lucida Sans', 'Lucida Sans Regular', 'Lucida Grande', 'Lucida Sans Unicode', Geneva, Verdana, sans-serif
   }
 
   #__nuxt {
@@ -182,9 +300,38 @@
     width: auto;
   }
 
+  #circle > * {
+    height: 100%;
+    width: 100%;
+    position: absolute;
+  }
+
   main {
     display: flex;
     flex-flow: column;
   }
 
+  #share {
+    position: absolute;
+    bottom: 1rem;
+    right: 1rem;
+    padding: 0.5rem;
+    border-radius: 0.5rem;
+    border: solid 2px rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    width: 3rem;
+    height: 3rem;
+  }
+
+  #install {
+    position: absolute;
+    bottom: 1rem;
+    left: 1rem;
+    padding: 0.5rem;
+    border-radius: 0.5rem;
+    border: solid 2px rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    width: 3rem;
+    height: 3rem;
+  }
 </style>
